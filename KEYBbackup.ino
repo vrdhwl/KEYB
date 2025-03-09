@@ -1,113 +1,104 @@
-#include <Keyboard.h>                           
 #include <KeyboardBLE.h>
-int longPressDelay = 100;                   //customizable encoderValues
-int spamSpeed = 15;
-int rowval=5;
-int colval=14;
-char KEY_SPACE = ' ';
-byte inputs[] = {6, 2, 8, 9, 10, 11, 12, 16,17,18,19,20,21,22};          //declaring inputs and outputs
-const int inCount = sizeof(inputs)/sizeof(inputs[0]);
-byte outputs[] = {0,1,7,3,4};
-const int outCount = sizeof(outputs)/sizeof(outputs[0]);
+#include <Arduino.h>
 
-char layout[5][14] = {               //layout grid for characters
-    {KEY_ESC,   '1',   '2',   '3',   '4',   '5',   '6',   '7',   '8',   '9',   '0', '-',  '=',  KEY_BACKSPACE },
-    {KEY_TAB,    ' ',    'w',    'e',    'r',    't',    'y',    'u',    'i',    'o',    'p', '[', ']', '\\' },
-    {KEY_CAPS_LOCK,    'a',    's',    'd',    'q',    'g',    'h',    'j',    'k',    'l', ';', '\'', ' ',    KEY_RETURN },
-    {KEY_LEFT_SHIFT,    'z',    'x',    'c',    'v',    'b',    'n',    'm', ',',  '.', '/', '_', ' ',    KEY_UP_ARROW },
-    {KEY_LEFT_CTRL, KEY_LEFT_GUI, KEY_LEFT_ALT,' ',  'f',' ', ' ', ' ', ' ',  ' ', KEY_PRINT_SCREEN, KEY_LEFT_ARROW, KEY_DOWN_ARROW, KEY_RIGHT_ARROW }
+
+// Define a simple structure to hold key data.
+struct SimpleKey {
+  int outPin;    // Pin to drive the key (set LOW to activate)
+  int inPin;     // Pin to read the key (will read LOW when pressed)
+  int keyCode;   // The key code to send when the key is pressed
+  bool pressed;  // Track the current state of the key
 };
 
+// Create an array for the 5 keys using the specified GPIO pairs.
+SimpleKey keys[5] = {
+  {1, 2, ' ', false}, 
+  {3, 5, KEY_LEFT_ARROW, false},
+  {6, 8, KEY_UP_ARROW, false},
+  {9, 10, KEY_DOWN_ARROW, false},
+  {11, 13, KEY_RIGHT_ARROW, false}
+};
+
+// Function to read battery percentage
+int readBatteryPercentage() {
+  const float conversion_factor = 3.3f / 4095.0f;  // 12-bit ADC, 3.3V reference
+  const float voltage_divider_ratio = 3.0f;        // Voltage divider scales down by 3
+
+  // Enable voltage divider by setting GPIO25 high
+  pinMode(25, OUTPUT);
+  digitalWrite(25, HIGH);
+  delay(1);  // Allow voltage to stabilize
+
+  // Read from ADC3 (GPIO29)
+  int raw_adc = analogRead(29);
+
+  // Disable voltage divider to prevent Wi-Fi interference
+  digitalWrite(25, LOW);
+
+  // Calculate VSYS voltage
+  float vsys_voltage = raw_adc * conversion_factor * voltage_divider_ratio;
+
+  // Convert voltage to percentage (assuming 4.2V as 100% and 3.0V as 0%)
+  int  percentage = vsys_voltage * 10;
+
+  return percentage;
+}
+
+int bat;
+unsigned long previousMillis = 0;
+const long interval = 5000;  // 5000 ms = 5 seconds
 
 
-int keyDown[5][14];
-bool keyLong[5][14];
 
+void setup() {
+  Serial.begin(9600);
+  analogReadResolution(12);  // Set ADC resolution to 12-bit
+  bat= readBatteryPercentage();
+  Serial.print("Battery Voltage: ");
+  Serial.print(bat);
+  Serial.println("%");
 
-void setup(){
-  
-  for(int i=0; i<outCount; i++){    //declaring all the outputs and setting them high
-    pinMode(outputs[i],OUTPUT);
-    digitalWrite(outputs[i],HIGH);
+  // Configure each key's pins.
+  for (int i = 0; i < 5; i++) {
+    pinMode(keys[i].outPin, OUTPUT);
+    digitalWrite(keys[i].outPin, HIGH);  // Ensure the output is HIGH when idle.
+    pinMode(keys[i].inPin, INPUT_PULLUP);  // Enable the internal pullup resistor.
   }
-  for(int i=0; i<inCount; i++){     //declaring all the inputs and activating the internal pullup resistor
-    pinMode(inputs[i],INPUT_PULLUP);
-  }
-  
- Serial.begin(115200);
+
+  // Start BLE Keyboard after reading battery
   KeyboardBLE.begin();
-  delay(5000);
 
+  // Set battery percentage in BLE
+
+
+  delay(5000); // Optional: delay to allow BLE connection establishment.
 }
 
-//Main loop going through all the keys, then waiting 0.5ms
 void loop() {
-  for (int i=0; i<rowval; i++)
-  {    
-    digitalWrite(outputs[i],LOW);   //setting one row low
-    delayMicroseconds(5);           //giving electronics time to settle down
+    unsigned long currentMillis = millis();
+  if (currentMillis - previousMillis >= interval) {
+    previousMillis = currentMillis;
+    KeyboardBLE.setBattery(bat);
+    Serial.print(bat);
+    Serial.println("%");
+  }
+  for (int i = 0; i < 5; i++) {
+    digitalWrite(keys[i].outPin, LOW);
+    delayMicroseconds(5); // Allow voltage to settle.
     
-    for(int j=0; j<colval; j++)
-    {
-      if(digitalRead(inputs[j]) == LOW)
-      {
-        keyPressed(i,j);            //calling keyPressed function if one of the inputs reads low
-      }
-      else if(keyDown[i][j] != 0)   //resetting the key if it is not pressed any more
-      {  
-        resetKey(i,j);
-      }
+    bool isPressed = (digitalRead(keys[i].inPin) == LOW);
+    
+    if (isPressed && !keys[i].pressed) {
+      KeyboardBLE.press(keys[i].keyCode);
+      keys[i].pressed = true;
+    } else if (!isPressed && keys[i].pressed) {
+      KeyboardBLE.release(keys[i].keyCode);
+      keys[i].pressed = false;
     }
     
-    digitalWrite(outputs[i],HIGH);
-    delayMicroseconds(500);         //setting the row high and waiting 0.5ms until next cycle
+    digitalWrite(keys[i].outPin, HIGH);
+
   }
 
-}
-
-//if a key is pressed, this Funtion is called and outputs to serial the key location, it also sends the keystroke if not already done so
-void keyPressed(int row, int col){
-  Serial.print("Output: "); 
-  Serial.print(row);
-  Serial.print(" Input: ");
-  Serial.print(col);
-  Serial.print(" ");
-  Serial.println(layout[row][col]);
- 
-   if (layout[row][col] == KEY_LEFT_SHIFT  )
-   { KeyboardBLE.press(layout[row][col]);
-   }
-
-   if (layout[row][col] == KEY_LEFT_CTRL )
-   { KeyboardBLE.press(layout[row][col]);
-   }
-
-   if (layout[row][col] == KEY_LEFT_ALT )
-   { KeyboardBLE.press(layout[row][col]);
-   }
-
-        
-   if(keyDown[row][col]==0){   //if the function is called for the first time for this key
-    if (layout[row][col]== KEY_LEFT_GUI)
-    { KeyboardBLE.press(layout[row][col]);
-    }
-    else {
-    KeyboardBLE.write(layout[row][col]);
-    }
-  }
-  else if(keyLong[row][col] && keyDown[row][col] > spamSpeed){//if the key has been held long enough to warrant another keystroke set
-    KeyboardBLE.press(layout[row][col]);
-    keyDown[row][col] = 1;
-  }
-  else if(keyDown[row][col] > longPressDelay){ //if the key has been held for longer that longPressDelay, it switches into spam mode
-    keyLong[row][col] = true;
-  }
-
-  keyDown[row][col]++;
-}
-
-void resetKey(int row, int col){ //resetting the variables after key is released        
-  keyDown[row][col] = 0;
-  keyLong[row][col] = false;
-  KeyboardBLE.release(layout[row][col]);
+  delay(10); // Small delay to help with debouncing.
 }
